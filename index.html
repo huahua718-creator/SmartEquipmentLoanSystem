@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>智慧型器材借閱管理系統</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Noto Sans TC"', 'system-ui', '-apple-system', 'sans-serif']
+          },
+          colors: {
+            warmbg: '#FAF8F5',
+            amberbrand: '#D97706',
+            sagebrand: '#059669'
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body {
+      background-color: #FAF8F5;
+      color: #292524;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #qrReader video {
+      border-radius: 0.75rem;
+      object-fit: cover !important;
+    }
+    @keyframes slideUpFade {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .toast-enter {
+      animation: slideUpFade 0.22s ease-out forwards;
+    }
+  </style>
+</head>
+<body class="min-h-screen pb-28 antialiased">
+
+  <!-- LINE 內建瀏覽器全螢幕防呆遮罩 -->
+  <div id="lineGuardOverlay" class="fixed inset-0 z-50 hidden bg-warmbg/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
+    <div class="max-w-sm w-full bg-white rounded-3xl shadow-xl border border-amber-200 p-7 space-y-5">
+      <div class="mx-auto w-16 h-16 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center text-3xl">
+        📷
+      </div>
+      <h2 class="text-xl font-bold text-stone-800">請使用預設瀏覽器開啟</h2>
+      <p class="text-stone-600 text-base leading-relaxed">
+        LINE 內建瀏覽器會阻擋手機相機權限，導致無法掃描器材 QR Code。<br />
+        請點擊右上角 <span class="inline-block px-2 py-0.5 bg-stone-100 rounded font-bold text-stone-800">⋮</span> 或 <span class="inline-block px-2 py-0.5 bg-stone-100 rounded font-bold text-stone-800">↗</span>，選擇<strong class="text-amber-700">「以預設瀏覽器開啟」</strong>（Safari / Chrome）。
+      </p>
+      <button type="button" onclick="copyCurrentUrl()" class="w-full py-3.5 px-4 rounded-2xl bg-amber-600 hover:bg-amber-700 active:scale-[0.99] text-white font-bold text-base shadow-md transition">
+        📋 一鍵複製本頁網址
+      </button>
+      <button type="button" onclick="dismissLineGuard()" class="w-full py-2 text-sm text-stone-400 hover:text-stone-600">
+        仍要暫時瀏覽（僅手動輸入編號）
+      </button>
+    </div>
+  </div>
+
+  <!-- 全螢幕 Loading 遮罩 -->
+  <div id="loadingOverlay" class="fixed inset-0 z-40 hidden bg-stone-900/40 backdrop-blur-[2px] flex items-center justify-center p-6">
+    <div class="bg-white rounded-2xl shadow-xl px-7 py-6 flex flex-col items-center space-y-3 max-w-xs w-full border border-stone-200">
+      <div class="w-10 h-10 border-4 border-amber-200 border-t-amber-600 rounded-full animate-spin"></div>
+      <p id="loadingText" class="text-stone-700 font-semibold text-base text-center">資料同步中，請稍候...</p>
+    </div>
+  </div>
+
+  <!-- Toast 通知容器 -->
+  <div id="toastContainer" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md space-y-2 pointer-events-none"></div>
+
+  <!-- 頂部導覽列 -->
+  <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-stone-200/80 shadow-sm">
+    <div class="max-w-xl mx-auto px-4 pt-3.5 pb-3">
+      <div class="flex items-center justify-between gap-2 mb-3">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <div id="brandBadge" class="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center text-xl shrink-0">
+            📦
+          </div>
+          <div class="min-w-0">
+            <h1 id="systemTitle" class="text-lg font-bold text-stone-800 truncate">智慧型器材借閱管理系統</h1>
+            <p id="syncStatusText" class="text-xs text-stone-500">準備同步器材清單...</p>
+          </div>
+        </div>
+        <button type="button" onclick="fetchEquipmentList(true)" title="重新同步器材狀態" class="shrink-0 px-3 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 active:scale-95 text-stone-700 text-sm font-medium transition flex items-center gap-1">
+          <span>🔄</span>
+          <span>同步</span>
+        </button>
+      </div>
+
+      <!-- 尚未設定 GAS_API_URL 提示橫幅 -->
+      <div id="demoBanner" class="hidden mb-3 px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs leading-relaxed">
+        ⚠️ <strong>本機展示模式</strong>：尚未於程式碼設定 <code>GAS_API_URL</code>，目前使用模擬器材資料測試操作流程。
+      </div>
+
+      <!-- 主功能分頁 Tabs -->
+      <div class="grid grid-cols-3 gap-1.5 bg-stone-100 p-1 rounded-2xl">
+        <button type="button" id="tabBorrow" onclick="switchTab('BORROW')" class="py-2.5 px-2 rounded-xl text-sm sm:text-base font-bold transition shadow-sm bg-amber-600 text-white">
+          📤 我要借閱
+        </button>
+        <button type="button" id="tabReturn" onclick="switchTab('RETURN')" class="py-2.5 px-2 rounded-xl text-sm sm:text-base font-bold transition text-stone-600 hover:text-stone-800">
+          📥 我要歸還
+        </button>
+        <button type="button" id="tabOverview" onclick="switchTab('OVERVIEW')" class="py-2.5 px-2 rounded-xl text-sm sm:text-base font-bold transition text-stone-600 hover:text-stone-800">
+          📋 現況一覽
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-xl mx-auto px-4 pt-4 space-y-4">
+
+    <!-- ==================== 借閱 / 歸還共用作業區 ==================== -->
+    <section id="transactionView" class="space-y-4">
+
+      <!-- 1. 借閱人資料卡片（含 LocalStorage 預填） -->
+      <div id="borrowerCard" class="bg-white rounded-2xl border border-stone-200/90 shadow-sm p-4 sm:p-5 space-y-3.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="borrowerCardTitle" class="text-base font-bold text-stone-800 flex items-center gap-1.5">
+            <span>👤</span>
+            <span>借閱人資料</span>
+          </h2>
+          <button type="button" onclick="clearSavedProfile()" class="px-3 py-1.5 rounded-xl bg-stone-100 hover:bg-red-50 hover:text-red-700 text-stone-600 text-xs font-semibold transition border border-stone-200">
+            🔄 切換借閱人（清除記憶）
+          </button>
+        </div>
+
+        <!-- 自動載入記憶提示標籤 -->
+        <div id="prefillBadge" class="hidden px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium flex items-center gap-1.5">
+          <span>✅</span>
+          <span>已自動載入您的常用資料（送出借閱後將自動更新記憶）</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label for="inputUnit" class="block text-sm font-semibold text-stone-700 mb-1">
+              班級 / 處室 <span id="unitRequiredMark" class="text-amber-600">*</span>
+            </label>
+            <input id="inputUnit" type="text" placeholder="例如：自然科 / 801班" class="w-full px-3.5 py-3 rounded-xl border border-stone-300 bg-stone-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-base" />
+          </div>
+          <div>
+            <label for="inputName" class="block text-sm font-semibold text-stone-700 mb-1">
+              姓名 <span id="nameRequiredMark" class="text-amber-600">*</span>
+            </label>
+            <input id="inputName" type="text" placeholder="例如：王小明" class="w-full px-3.5 py-3 rounded-xl border border-stone-300 bg-stone-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-base" />
+          </div>
+        </div>
+
+        <div>
+          <label for="inputContact" class="block text-sm font-semibold text-stone-700 mb-1">
+            分機或聯絡方式 <span class="text-xs font-normal text-stone-400">（選填）</span>
+          </label>
+          <input id="inputContact" type="text" placeholder="例如：分機 123 / 0912-345-678" class="w-full px-3.5 py-3 rounded-xl border border-stone-300 bg-stone-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-base" />
+        </div>
+      </div>
+
+      <!-- 2. 相機連續掃碼與手動輸入卡片 -->
+      <div class="bg-white rounded-2xl border border-stone-200/90 shadow-sm p-4 sm:p-5 space-y-4">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="text-base font-bold text-stone-800 flex items-center gap-1.5">
+            <span>📷</span>
+            <span>掃描器材 QR Code</span>
+          </h2>
+          <span class="text-xs px-2.5 py-1 rounded-full bg-stone-100 text-stone-600 font-medium">支援連續掃描</span>
+        </div>
+
+        <!-- 相機控制按鈕 -->
+        <div class="flex flex-wrap gap-2">
+          <button type="button" id="btnStartScan" onclick="startScanner()" class="flex-1 min-w-[160px] py-3.5 px-4 rounded-2xl bg-amber-600 hover:bg-amber-700 active:scale-[0.99] text-white font-bold text-base shadow-sm transition flex items-center justify-center gap-2">
+            <span>📸</span>
+            <span>開啟相機掃描</span>
+          </button>
+          <button type="button" id="btnSwitchCamera" onclick="switchCamera()" class="hidden py-3.5 px-4 rounded-2xl bg-stone-100 hover:bg-stone-200 text-stone-700 font-semibold text-sm transition">
+            🔁 切換鏡頭
+          </button>
+          <button type="button" id="btnStopScan" onclick="stopScanner()" class="hidden py-3.5 px-4 rounded-2xl bg-stone-800 hover:bg-stone-900 text-white font-semibold text-sm transition">
+            ⏹ 停止掃描
+          </button>
+        </div>
+
+        <!-- 相機畫面容器 -->
+        <div id="scannerContainer" class="hidden space-y-2">
+          <div id="qrReader" class="w-full overflow-hidden rounded-2xl bg-stone-900 border border-stone-200"></div>
+          <p class="text-xs text-center text-stone-500">請將器材上的 QR Code 對準框線內，掃描後會自動加入下方清單（2.5 秒防重複）</p>
+        </div>
+
+        <!-- 備用手動輸入框 -->
+        <div class="pt-1 border-t border-stone-100">
+          <label for="manualItemId" class="block text-sm font-semibold text-stone-700 mb-1.5">
+            或手動輸入器材編號（條碼破損備用）
+          </label>
+          <div class="flex gap-2">
+            <input id="manualItemId" type="text" placeholder="輸入如 EQ-001 後按加入" class="flex-1 px-3.5 py-3 rounded-xl border border-stone-300 bg-stone-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-base uppercase" />
+            <button type="button" onclick="handleManualAdd()" class="px-5 py-3 rounded-xl bg-stone-800 hover:bg-stone-900 active:scale-95 text-white font-bold text-base transition shrink-0">
+              ＋ 加入
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. 已掃描待處理清單 (Cart) -->
+      <div class="bg-white rounded-2xl border border-stone-200/90 shadow-sm p-4 sm:p-5 space-y-3.5">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-bold text-stone-800 flex items-center gap-2">
+            <span>🛒</span>
+            <span>待處理器材清單</span>
+            <span id="cartCountBadge" class="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-bold">0</span>
+          </h2>
+          <button type="button" id="btnClearCart" onclick="clearCart()" class="hidden text-xs font-semibold text-stone-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 transition">
+            清空清單
+          </button>
+        </div>
+
+        <!-- 清單警示訊息（例如借閱模式掃到已借出項目） -->
+        <div id="cartConflictAlert" class="hidden p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm space-y-2">
+          <p id="cartConflictText" class="font-semibold"></p>
+          <div id="cartConflictActions" class="flex flex-wrap gap-2"></div>
+        </div>
+
+        <!-- 購物車項目列表 -->
+        <div id="cartList" class="space-y-2.5">
+          <div class="text-center py-8 px-4 rounded-xl bg-stone-50 border border-dashed border-stone-200 text-stone-400 text-sm">
+            尚未加入任何器材，請開啟相機掃描或手動輸入編號
+          </div>
+        </div>
+
+        <!-- 備註欄位 -->
+        <div class="pt-2 border-t border-stone-100">
+          <label for="inputNote" class="block text-sm font-semibold text-stone-700 mb-1">
+            備註 <span class="text-xs font-normal text-stone-400">（選填，如使用課程或歸還異常回報）</span>
+          </label>
+          <input id="inputNote" type="text" placeholder="例如：第三節理化實驗課使用" class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 bg-stone-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-base" />
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ==================== 器材現況一覽看板 ==================== -->
+    <section id="overviewView" class="hidden space-y-4">
+      <div class="bg-white rounded-2xl border border-stone-200/90 shadow-sm p-4 space-y-3">
+        <div class="relative">
+          <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400">🔍</span>
+          <input id="searchInput" type="text" oninput="renderOverview()" placeholder="搜尋編號、器材名稱、位置或借閱人..." class="w-full pl-10 pr-4 py-3 rounded-xl border border-stone-300 bg-stone-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-base" />
+        </div>
+
+        <!-- 狀態篩選按鈕 -->
+        <div class="flex flex-wrap gap-2">
+          <button type="button" onclick="setOverviewFilter('ALL')" id="filterALL" class="px-3.5 py-2 rounded-xl text-sm font-bold bg-stone-800 text-white transition">
+            全部 (<span id="countALL">0</span>)
+          </button>
+          <button type="button" onclick="setOverviewFilter('AVAILABLE')" id="filterAVAILABLE" class="px-3.5 py-2 rounded-xl text-sm font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 transition">
+            在館可借 (<span id="countAVAILABLE">0</span>)
+          </button>
+          <button type="button" onclick="setOverviewFilter('BORROWED')" id="filterBORROWED" class="px-3.5 py-2 rounded-xl text-sm font-bold bg-amber-50 text-amber-700 border border-amber-200 transition">
+            借出中 (<span id="countBORROWED">0</span>)
+          </button>
+          <button type="button" onclick="setOverviewFilter('MAINTENANCE')" id="filterMAINTENANCE" class="px-3.5 py-2 rounded-xl text-sm font-bold bg-stone-100 text-stone-600 border border-stone-200 transition">
+            維修中 (<span id="countMAINTENANCE">0</span>)
+          </button>
+        </div>
+      </div>
+
+      <div id="overviewList" class="space-y-3"></div>
+    </section>
+
+  </main>
+
+  <!-- 底部固定送出按鈕列（借閱 / 歸還模式顯示） -->
+  <div id="bottomActionBar" class="fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t border-stone-200 px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
+    <div class="max-w-xl mx-auto">
+      <button type="button" id="btnSubmit" onclick="submitTransaction()" class="w-full py-4 px-5 rounded-2xl bg-amber-600 hover:bg-amber-700 active:scale-[0.99] disabled:opacity-45 disabled:cursor-not-allowed text-white font-bold text-lg shadow-md transition">
+        確認送出借閱 (0 項)
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // 請將下方 URL 替換為您的 Google Apps Script 網頁應用程式部署 URL
+    // =========================================================================
+    const GAS_API_URL = "YOUR_GAS_WEB_APP_URL";
+
+    const PROFILE_STORAGE_KEY = "eq_loan_user_profile";
+    const DEBOUNCE_MS = 2500;
+
+    // 應用程式狀態
+    let currentTab = "BORROW"; // "BORROW" | "RETURN" | "OVERVIEW"
+    let equipmentList = [];
+    let equipmentMap = {};
+    let cartItemIds = [];
+    let overviewFilter = "ALL";
+    let isDemoMode = false;
+
+    // 相機與防抖狀態
+    let html5QrCode = null;
+    let isScanning = false;
+    let availableCameras = [];
+    let currentCameraIndex = 0;
+    const lastScanTimeById = {};
+    let audioCtx = null;
+
+    // =========================================================================
+    // 初始化流程
+    // =========================================================================
+    document.addEventListener("DOMContentLoaded", () => {
+      checkLineBrowser();
+      loadSavedProfile();
+      bindEvents();
+      fetchEquipmentList(false);
+      updateModeUI();
+    });
+
+    function bindEvents() {
+      const manualInput = document.getElementById("manualItemId");
+      manualInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          handleManualAdd();
+        }
+      });
+    }
+
+    // 3.1 LINE 內建瀏覽器偵測
+    function checkLineBrowser() {
+      const ua = navigator.userAgent || "";
+      if (/Line\//i.test(ua)) {
+        document.getElementById("lineGuardOverlay").classList.remove("hidden");
+      }
+    }
+
+    function dismissLineGuard() {
+      document.getElementById("lineGuardOverlay").classList.add("hidden");
+    }
+
+    function copyCurrentUrl() {
+      const url = window.location.href;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(() => {
+          showToast("已複製網址，請貼上至 Safari 或 Chrome 開啟！", "success");
+        }).catch(() => fallbackCopyText(url));
+      } else {
+        fallbackCopyText(url);
+      }
+    }
+
+    function fallbackCopyText(text) {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        showToast("已複製網址，請改用預設瀏覽器開啟！", "success");
+      } catch (err) {
+        showToast("複製失敗，請手動複製瀏覽器網址列", "error");
+      }
+      document.body.removeChild(ta);
+    }
+
+    // =========================================================================
+    // 3.2 LocalStorage 借閱人資料管理
+    // =========================================================================
+    function loadSavedProfile() {
+      try {
+        const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+        if (!raw) return;
+        const profile = JSON.parse(raw);
+        if (profile && (profile.unit || profile.name || profile.contact)) {
+          document.getElementById("inputUnit").value = profile.unit || "";
+          document.getElementById("inputName").value = profile.name || "";
+          document.getElementById("inputContact").value = profile.contact || "";
+          document.getElementById("prefillBadge").classList.remove("hidden");
+        }
+      } catch (err) {
+        console.warn("讀取 localStorage 失敗：", err);
+      }
+    }
+
+    function saveProfile(unit, name, contact) {
+      try {
+        const payload = { unit: unit, name: name, contact: contact };
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(payload));
+        document.getElementById("prefillBadge").classList.remove("hidden");
+      } catch (err) {
+        console.warn("寫入 localStorage 失敗：", err);
+      }
+    }
+
+    function clearSavedProfile() {
+      try {
+        localStorage.removeItem(PROFILE_STORAGE_KEY);
+      } catch (err) {
+        console.warn("清除 localStorage 失敗：", err);
+      }
+      document.getElementById("inputUnit").value = "";
+      document.getElementById("inputName").value = "";
+      document.getElementById("inputContact").value = "";
+      document.getElementById("prefillBadge").classList.add("hidden");
+      showToast("已清除借閱人記憶，請輸入新借閱人資料", "info");
+      document.getElementById("inputUnit").focus();
+    }
+
+    // =========================================================================
+    // API 資料同步（GET getEquipment & POST submitTransaction）
+    // =========================================================================
+    async function fetchEquipmentList(showSuccessToast) {
+      if (!GAS_API_URL || GAS_API_URL === "YOUR_GAS_WEB_APP_URL") {
+        isDemoMode = true;
+        document.getElementById("demoBanner").classList.remove("hidden");
+        loadDemoEquipmentIfEmpty();
+        rebuildEquipmentMap();
+        renderCart();
+        renderOverview();
+        document.getElementById("syncStatusText").textContent = "本機預覽模式（" + equipmentList.length + " 項器材）";
+        if (showSuccessToast) showToast("已重新整理預覽資料", "info");
+        return;
+      }
+
+      isDemoMode = false;
+      document.getElementById("demoBanner").classList.add("hidden");
+      setLoading(true, "正在同步最新器材狀態...");
+
+      try {
+        const sep = GAS_API_URL.includes("?") ? "&" : "?";
+        const res = await fetch(`${GAS_API_URL}${sep}action=getEquipment`, {
+          method: "GET",
+          cache: "no-store"
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const json = await res.json();
+        if (!json.success) throw new Error(json.message || "取得器材清單失敗");
+
+        equipmentList = Array.isArray(json.data) ? json.data : [];
+        if (json.settings && json.settings.system_title) {
+          document.getElementById("systemTitle").textContent = json.settings.system_title;
+          document.title = json.settings.system_title;
+        }
+        rebuildEquipmentMap();
+        renderCart();
+        renderOverview();
+
+        const timeLabel = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        document.getElementById("syncStatusText").textContent = `共 ${equipmentList.length} 項器材・更新於 ${timeLabel}`;
+        if (showSuccessToast) showToast("器材狀態已同步完成", "success");
+      } catch (err) {
+        console.error(err);
+        document.getElementById("syncStatusText").textContent = "同步失敗，請點擊右側重新同步";
+        showToast("無法連線至後端資料庫：" + err.message, "error");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function loadDemoEquipmentIfEmpty() {
+      if (equipmentList.length > 0) return;
+      const now = formatLocalNow();
+      equipmentList = [
+        { item_id: "EQ-001", item_name: "數位三用電表", category: "電學器材", location: "理化實驗室 A 櫃-1層", status: "AVAILABLE", current_borrower: "", current_unit: "", last_updated: now },
+        { item_id: "EQ-002", item_name: "Vernier 能量感測器", category: "感測器", location: "理化實驗室 A 櫃-2層", status: "AVAILABLE", current_borrower: "", current_unit: "", last_updated: now },
+        { item_id: "EQ-003", item_name: "Arduino Uno 開發板套件", category: "微控制器", location: "資訊室 B 櫃-1層", status: "AVAILABLE", current_borrower: "", current_unit: "", last_updated: now },
+        { item_id: "EQ-004", item_name: "數位示波器 (攜帶型)", category: "電學器材", location: "理化實驗室 A 櫃-3層", status: "BORROWED", current_borrower: "王小明", current_unit: "801班", last_updated: now },
+        { item_id: "EQ-005", item_name: "Chromebook 教學平板 #01", category: "資訊設備", location: "充電車 C 櫃-01", status: "AVAILABLE", current_borrower: "", current_unit: "", last_updated: now },
+        { item_id: "EQ-006", item_name: "紅外線測溫槍", category: "量測儀器", location: "器材室 D 櫃-1層", status: "MAINTENANCE", current_borrower: "", current_unit: "", last_updated: now }
+      ];
+    }
+
+    function rebuildEquipmentMap() {
+      equipmentMap = {};
+      for (const item of equipmentList) {
+        equipmentMap[String(item.item_id).trim().toUpperCase()] = item;
+      }
+    }
+
+    // =========================================================================
+    // 模式切換 (借閱 / 歸還 / 現況一覽)
+    // =========================================================================
+    function switchTab(tab) {
+      currentTab = tab;
+      if (tab === "OVERVIEW" && isScanning) {
+        stopScanner();
+      }
+      updateModeUI();
+      renderCart();
+      if (tab === "OVERVIEW") {
+        renderOverview();
+      }
+    }
+
+    function updateModeUI() {
+      const tabBorrow = document.getElementById("tabBorrow");
+      const tabReturn = document.getElementById("tabReturn");
+      const tabOverview = document.getElementById("tabOverview");
+      const txView = document.getElementById("transactionView");
+      const ovView = document.getElementById("overviewView");
+      const bottomBar = document.getElementById("bottomActionBar");
+      const btnSubmit = document.getElementById("btnSubmit");
+      const btnStartScan = document.getElementById("btnStartScan");
+      const brandBadge = document.getElementById("brandBadge");
+      const cartCountBadge = document.getElementById("cartCountBadge");
+      const borrowerCardTitle = document.getElementById("borrowerCardTitle");
+      const unitReq = document.getElementById("unitRequiredMark");
+      const nameReq = document.getElementById("nameRequiredMark");
+
+      const baseTab = "py-2.5 px-2 rounded-xl text-sm sm:text-base font-bold transition ";
+      tabBorrow.className = baseTab + (currentTab === "BORROW" ? "shadow-sm bg-amber-600 text-white" : "text-stone-600 hover:text-stone-800");
+      tabReturn.className = baseTab + (currentTab === "RETURN" ? "shadow-sm bg-emerald-600 text-white" : "text-stone-600 hover:text-stone-800");
+      tabOverview.className = baseTab + (currentTab === "OVERVIEW" ? "shadow-sm bg-stone-800 text-white" : "text-stone-600 hover:text-stone-800");
+
+      if (currentTab === "OVERVIEW") {
+        txView.classList.add("hidden");
+        ovView.classList.remove("hidden");
+        bottomBar.classList.add("hidden");
+        brandBadge.className = "w-10 h-10 rounded-xl bg-stone-200 text-stone-700 flex items-center justify-center text-xl shrink-0";
+        return;
+      }
+
+      txView.classList.remove("hidden");
+      ovView.classList.add("hidden");
+      bottomBar.classList.remove("hidden");
+
+      if (currentTab === "BORROW") {
+        brandBadge.className = "w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center text-xl shrink-0";
+        btnStartScan.className = "flex-1 min-w-[160px] py-3.5 px-4 rounded-2xl bg-amber-600 hover:bg-amber-700 active:scale-[0.99] text-white font-bold text-base shadow-sm transition flex items-center justify-center gap-2";
+        btnSubmit.className = "w-full py-4 px-5 rounded-2xl bg-amber-600 hover:bg-amber-700 active:scale-[0.99] disabled:opacity-45 disabled:cursor-not-allowed text-white font-bold text-lg shadow-md transition";
+        cartCountBadge.className = "px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-bold";
+        borrowerCardTitle.innerHTML = "<span>👤</span><span>借閱人資料</span>";
+        unitReq.classList.remove("hidden");
+        nameReq.classList.remove("hidden");
+      } else {
+        brandBadge.className = "w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-xl shrink-0";
+        btnStartScan.className = "flex-1 min-w-[160px] py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold text-base shadow-sm transition flex items-center justify-center gap-2";
+        btnSubmit.className = "w-full py-4 px-5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] disabled:opacity-45 disabled:cursor-not-allowed text-white font-bold text-lg shadow-md transition";
+        cartCountBadge.className = "px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold";
+        borrowerCardTitle.innerHTML = '<span>👤</span><span>歸還人資料 <span class="text-xs font-normal text-stone-400">(選填)</span></span>';
+        unitReq.classList.add("hidden");
+        nameReq.classList.add("hidden");
+      }
+    }
+
+    // =========================================================================
+    // 相機掃碼 (html5-qrcode) + Web Audio API 提示音 + 震動 + 2.5s 防抖
+    // =========================================================================
+    function unlockAudioContext() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      if (!audioCtx) {
+        audioCtx = new AudioContextClass();
+      }
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
+    }
+
+    function playBeep(isSuccess = true) {
+      try {
+        unlockAudioContext();
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = isSuccess ? "sine" : "triangle";
+        osc.frequency.setValueAtTime(isSuccess ? 1046.5 : 330, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.18, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + (isSuccess ? 0.12 : 0.22));
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + (isSuccess ? 0.13 : 0.23));
+      } catch (err) {
+        // 忽略無音效裝置環境之錯誤
+      }
+    }
+
+    async function startScanner() {
+      if (isScanning) return;
+      unlockAudioContext();
+
+      if (typeof Html5Qrcode === "undefined") {
+        showToast("相機掃碼套件載入失敗，請檢查網路連線", "error");
+        return;
+      }
+
+      document.getElementById("scannerContainer").classList.remove("hidden");
+      document.getElementById("btnStartScan").classList.add("hidden");
+      document.getElementById("btnStopScan").classList.remove("hidden");
+
+      try {
+        if (!html5QrCode) {
+          html5QrCode = new Html5Qrcode("qrReader");
+        }
+
+        // 偵測可用鏡頭以提供切換功能
+        try {
+          availableCameras = await Html5Qrcode.getCameras();
+          if (availableCameras.length > 1) {
+            document.getElementById("btnSwitchCamera").classList.remove("hidden");
+            const rearIdx = availableCameras.findIndex((c) => /back|rear|environment|後/i.test(c.label));
+            if (rearIdx !== -1) currentCameraIndex = rearIdx;
+          }
+        } catch (camErr) {
+          availableCameras = [];
+        }
+
+        const config = {
+          fps: 10,
+          qrbox: { width: 230, height: 230 },
+          aspectRatio: 1.0
+        };
+
+        const cameraParam = availableCameras.length > 0
+          ? { deviceId: { exact: availableCameras[currentCameraIndex].id } }
+          : { facingMode: "environment" };
+
+        await html5QrCode.start(cameraParam, config, onScanSuccess, () => {});
+        isScanning = true;
+      } catch (err) {
+        console.error("啟動相機失敗：", err);
+        showToast("無法啟動相機，請確認已允許網站相機權限或改用手動輸入", "error");
+        resetScannerUI();
+      }
+    }
+
+    async function stopScanner() {
+      if (!html5QrCode || !isScanning) {
+        resetScannerUI();
+        return;
+      }
+      try {
+        await html5QrCode.stop();
+      } catch (err) {
+        console.warn("停止相機時發生訊息：", err);
+      } finally {
+        isScanning = false;
+        resetScannerUI();
+      }
+    }
+
+    async function switchCamera() {
+      if (availableCameras.length < 2) return;
+      currentCameraIndex = (currentCameraIndex + 1) % availableCameras.length;
+      await stopScanner();
+      await startScanner();
+    }
+
+    function resetScannerUI() {
+      document.getElementById("scannerContainer").classList.add("hidden");
+      document.getElementById("btnStartScan").classList.remove("hidden");
+      document.getElementById("btnStopScan").classList.add("hidden");
+      document.getElementById("btnSwitchCamera").classList.add("hidden");
+    }
+
+    function onScanSuccess(decodedText) {
+      const rawId = String(decodedText || "").trim().toUpperCase();
+      if (!rawId) return;
+
+      const now = Date.now();
+      if (lastScanTimeById[rawId] && (now - lastScanTimeById[rawId] < DEBOUNCE_MS)) {
+        return; // 2.5 秒內相同編號防重複觸發
+      }
+      lastScanTimeById[rawId] = now;
+
+      addItemToCart(rawId, true);
+    }
+
+    function handleManualAdd() {
+      const input = document.getElementById("manualItemId");
+      const rawId = input.value.trim().toUpperCase();
+      if (!rawId) {
+        showToast("請輸入器材編號", "warning");
+        input.focus();
+        return;
+      }
+      input.value = "";
+      addItemToCart(rawId, false);
+    }
+
+    async function addItemToCart(itemId, fromCamera) {
+      // 若本機快取找不到，嘗試先與後端同步一次（可能是新增的器材）
+      if (!equipmentMap[itemId] && !isDemoMode && GAS_API_URL !== "YOUR_GAS_WEB_APP_URL") {
+        await fetchEquipmentList(false);
+      }
+
+      if (cartItemIds.includes(itemId)) {
+        if (fromCamera) playBeep(false);
+        showToast(`${itemId} 已在待處理清單中`, "info");
+        return;
+      }
+
+      cartItemIds.push(itemId);
+      const eq = equipmentMap[itemId];
+
+      if (fromCamera) {
+        const hasIssue = !eq ||
+          (currentTab === "BORROW" && eq.status !== "AVAILABLE") ||
+          (currentTab === "RETURN" && eq.status !== "BORROWED");
+        playBeep(!hasIssue);
+        if (navigator.vibrate) {
+          navigator.vibrate(hasIssue ? [80, 50, 80] : 100);
+        }
+      }
+
+      if (!eq) {
+        showToast(`注意：主檔查無 ${itemId}`, "warning");
+      } else if (currentTab === "BORROW" && eq.status === "BORROWED") {
+        showToast(`${eq.item_name} 目前由 ${eq.current_unit} ${eq.current_borrower} 借出中`, "warning");
+      } else if (currentTab === "BORROW" && eq.status === "MAINTENANCE") {
+        showToast(`${eq.item_name} 目前維修中，無法借閱`, "warning");
+      } else if (currentTab === "RETURN" && eq.status === "AVAILABLE") {
+        showToast(`${eq.item_name} 目前狀態為「在館」，無需歸還`, "warning");
+      } else {
+        showToast(`已加入：${eq.item_name} (${eq.item_id})`, "success");
+      }
+
+      renderCart();
+    }
+
+    function removeFromCart(itemId) {
+      cartItemIds = cartItemIds.filter((id) => id !== itemId);
+      renderCart();
+    }
+
+    function clearCart() {
+      cartItemIds = [];
+      renderCart();
+    }
+
+    // =========================================================================
+    // 購物車渲染與衝突檢查
+    // =========================================================================
+    function getItemConflict(itemId) {
+      const eq = equipmentMap[itemId];
+      if (!eq) {
+        return { blocking: true, text: "器材主檔查無此編號，無法送出" };
+      }
+      if (currentTab === "BORROW") {
+        if (eq.status === "BORROWED") {
+          const holder = [eq.current_unit, eq.current_borrower].filter(Boolean).join(" ") || "他人";
+          return { blocking: true, canSwitchReturn: true, text: `目前由 ${holder} 借出中` };
+        }
+        if (eq.status === "MAINTENANCE") {
+          return { blocking: true, text: "目前為維修中，禁止借閱" };
+        }
+      } else if (currentTab === "RETURN") {
+        if (eq.status === "AVAILABLE") {
+          return { blocking: true, text: "此器材目前在館中，無借出紀錄" };
+        }
+        if (eq.status === "MAINTENANCE") {
+          return { blocking: true, text: "此器材目前標記為維修中" };
+        }
+      }
+      return { blocking: false, text: "" };
+    }
+
+    function renderCart() {
+      const listEl = document.getElementById("cartList");
+      const badgeEl = document.getElementById("cartCountBadge");
+      const clearBtn = document.getElementById("btnClearCart");
+      const alertBox = document.getElementById("cartConflictAlert");
+      const alertText = document.getElementById("cartConflictText");
+      const alertActions = document.getElementById("cartConflictActions");
+      const btnSubmit = document.getElementById("btnSubmit");
+
+      badgeEl.textContent = cartItemIds.length;
+      clearBtn.classList.toggle("hidden", cartItemIds.length === 0);
+
+      if (cartItemIds.length === 0) {
+        listEl.innerHTML = `
+          <div class="text-center py-8 px-4 rounded-xl bg-stone-50 border border-dashed border-stone-200 text-stone-400 text-sm">
+            尚未加入任何器材，請開啟相機掃描或手動輸入編號
+          </div>`;
+        alertBox.classList.add("hidden");
+        btnSubmit.disabled = true;
+        btnSubmit.textContent = currentTab === "BORROW" ? "確認送出借閱 (0 項)" : "確認送出歸還 (0 項)";
+        return;
+      }
+
+      let hasBlocking = false;
+      let hasBorrowedInBorrowMode = false;
+      let html = "";
+
+      for (const itemId of cartItemIds) {
+        const eq = equipmentMap[itemId];
+        const conflict = getItemConflict(itemId);
+        if (conflict.blocking) hasBlocking = true;
+        if (conflict.canSwitchReturn) hasBorrowedInBorrowMode = true;
+
+        const cardStyle = conflict.blocking
+          ? "bg-red-50/90 border-red-300"
+          : "bg-stone-50/70 border-stone-200";
+
+        const statusBadge = eq ? renderStatusBadge(eq.status) : `<span class="px-2 py-0.5 rounded-md text-xs font-bold bg-red-100 text-red-700">未知編號</span>`;
+        const title = eq ? escapeHtml(eq.item_name) : `未知器材 (${escapeHtml(itemId)})`;
+        const sub = eq ? `${escapeHtml(eq.item_id)}・${escapeHtml(eq.category || "未分類")}・${escapeHtml(eq.location || "未設定櫃位")}` : escapeHtml(itemId);
+
+        html += `
+          <div class="flex items-start justify-between gap-3 p-3.5 rounded-xl border ${cardStyle} transition">
+            <div class="min-w-0 space-y-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-bold text-stone-800 text-base">${title}</span>
+                ${statusBadge}
+              </div>
+              <p class="text-xs text-stone-500">${sub}</p>
+              ${conflict.blocking ? `<p class="text-xs font-bold text-red-700 pt-0.5">⚠️ ${escapeHtml(conflict.text)}</p>` : ""}
+            </div>
+            <button type="button" onclick="removeFromCart('${escapeAttr(itemId)}')" aria-label="移除 ${escapeAttr(itemId)}" class="shrink-0 w-9 h-9 rounded-xl bg-white border border-stone-200 hover:bg-red-100 hover:text-red-700 hover:border-red-300 text-stone-500 font-bold text-base flex items-center justify-center transition">
+              ✕
+            </button>
+          </div>`;
+      }
+
+      listEl.innerHTML = html;
+
+      if (hasBlocking) {
+        alertBox.classList.remove("hidden");
+        alertText.textContent = currentTab === "BORROW"
+          ? "清單中包含「借出中 / 維修中 / 未知」的器材，請先移除或歸還後再送出借閱。"
+          : "清單中包含「在館中 / 維修中 / 未知」的器材，請移除後再送出歸還。";
+
+        alertActions.innerHTML = hasBorrowedInBorrowMode
+          ? `<button type="button" onclick="switchToReturnWithCart()" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition">📥 改為執行歸還此清單</button>`
+          : "";
+      } else {
+        alertBox.classList.add("hidden");
+      }
+
+      btnSubmit.disabled = hasBlocking || cartItemIds.length === 0;
+      btnSubmit.textContent = currentTab === "BORROW"
+        ? `確認送出借閱 (${cartItemIds.length} 項)`
+        : `確認送出歸還 (${cartItemIds.length} 項)`;
+    }
+
+    function switchToReturnWithCart() {
+      switchTab("RETURN");
+      showToast("已切換至「我要歸還」模式", "info");
+    }
+
+    // =========================================================================
+    // 送出批次借閱 / 歸還
+    // =========================================================================
+    async function submitTransaction() {
+      if (cartItemIds.length === 0) {
+        showToast("請先掃描或加入至少一項器材", "warning");
+        return;
+      }
+
+      for (const itemId of cartItemIds) {
+        const conflict = getItemConflict(itemId);
+        if (conflict.blocking) {
+          showToast(`${itemId}：${conflict.text}`, "error");
+          return;
+        }
+      }
+
+      const unit = document.getElementById("inputUnit").value.trim();
+      const name = document.getElementById("inputName").value.trim();
+      const contact = document.getElementById("inputContact").value.trim();
+      const note = document.getElementById("inputNote").value.trim();
+
+      if (currentTab === "BORROW") {
+        if (!unit) {
+          showToast("請填寫借閱人的「班級 / 處室」", "warning");
+          document.getElementById("inputUnit").focus();
+          return;
+        }
+        if (!name) {
+          showToast("請填寫借閱人「姓名」", "warning");
+          document.getElementById("inputName").focus();
+          return;
+        }
+      }
+
+      const payload = {
+        action: "submitTransaction",
+        type: currentTab,
+        borrower: {
+          unit: unit,
+          name: name,
+          contact: contact
+        },
+        items: [...cartItemIds],
+        note: note
+      };
+
+      // 本機預覽模式模擬送出
+      if (isDemoMode) {
+        applyDemoTransaction(payload);
+        return;
+      }
+
+      setLoading(true, currentTab === "BORROW" ? "正在送出借閱申請..." : "正在辦理器材歸還...");
+
+      try {
+        const res = await fetch(GAS_API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain;charset=utf-8"
+          },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const json = await res.json();
+
+        if (json.success) {
+          if (currentTab === "BORROW") {
+            saveProfile(unit, name, contact);
+          }
+          const processedSet = new Set((json.processed || []).map((x) => String(x).toUpperCase()));
+          cartItemIds = cartItemIds.filter((id) => !processedSet.has(id));
+          document.getElementById("inputNote").value = "";
+
+          if (Array.isArray(json.failed) && json.failed.length > 0) {
+            const failMsg = json.failed.map((f) => `${f.item_id}: ${f.reason}`).join("；");
+            showToast(`${json.message}（失敗：${failMsg}）`, "warning");
+          } else {
+            showToast(json.message || "作業完成！", "success");
+          }
+          await fetchEquipmentList(false);
+        } else {
+          showToast(json.message || "送出失敗，請稍後再試", "error");
+          await fetchEquipmentList(false);
+        }
+      } catch (err) {
+        console.error(err);
+        showToast("送出失敗，請檢查網路連線或 GAS 部署設定：" + err.message, "error");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function applyDemoTransaction(payload) {
+      const now = formatLocalNow();
+      for (const id of payload.items) {
+        const eq = equipmentMap[id];
+        if (!eq) continue;
+        if (payload.type === "BORROW") {
+          eq.status = "BORROWED";
+          eq.current_borrower = payload.borrower.name;
+          eq.current_unit = payload.borrower.unit;
+          eq.last_updated = now;
+        } else {
+          eq.status = "AVAILABLE";
+          eq.current_borrower = "";
+          eq.current_unit = "";
+          eq.last_updated = now;
+        }
+      }
+      if (payload.type === "BORROW") {
+        saveProfile(payload.borrower.unit, payload.borrower.name, payload.borrower.contact);
+      }
+      const count = payload.items.length;
+      cartItemIds = [];
+      document.getElementById("inputNote").value = "";
+      renderCart();
+      renderOverview();
+      showToast(`（預覽模式）成功完成 ${count} 項器材${payload.type === "BORROW" ? "借閱" : "歸還"}`, "success");
+    }
+
+    // =========================================================================
+    // 3.4 器材現況一覽看板
+    // =========================================================================
+    function setOverviewFilter(status) {
+      overviewFilter = status;
+      const styles = {
+        ALL: ["bg-stone-800 text-white", "bg-stone-100 text-stone-700 border border-stone-200"],
+        AVAILABLE: ["bg-emerald-600 text-white", "bg-emerald-50 text-emerald-700 border border-emerald-200"],
+        BORROWED: ["bg-amber-600 text-white", "bg-amber-50 text-amber-700 border border-amber-200"],
+        MAINTENANCE: ["bg-stone-600 text-white", "bg-stone-100 text-stone-600 border border-stone-200"]
+      };
+
+      for (const key of Object.keys(styles)) {
+        const el = document.getElementById("filter" + key);
+        el.className = "px-3.5 py-2 rounded-xl text-sm font-bold transition " + (status === key ? styles[key][0] : styles[key][1]);
+      }
+      renderOverview();
+    }
+
+    function renderOverview() {
+      const counts = { ALL: equipmentList.length, AVAILABLE: 0, BORROWED: 0, MAINTENANCE: 0 };
+      for (const item of equipmentList) {
+        if (counts[item.status] !== undefined) counts[item.status]++;
+      }
+      document.getElementById("countALL").textContent = counts.ALL;
+      document.getElementById("countAVAILABLE").textContent = counts.AVAILABLE;
+      document.getElementById("countBORROWED").textContent = counts.BORROWED;
+      document.getElementById("countMAINTENANCE").textContent = counts.MAINTENANCE;
+
+      const q = (document.getElementById("searchInput").value || "").trim().toLowerCase();
+      const filtered = equipmentList.filter((item) => {
+        if (overviewFilter !== "ALL" && item.status !== overviewFilter) return false;
+        if (!q) return true;
+        const haystack = [
+          item.item_id,
+          item.item_name,
+          item.category,
+          item.location,
+          item.current_borrower,
+          item.current_unit
+        ].join(" ").toLowerCase();
+        return haystack.includes(q);
+      });
+
+      const listEl = document.getElementById("overviewList");
+      if (filtered.length === 0) {
+        listEl.innerHTML = `
+          <div class="bg-white rounded-2xl border border-stone-200 p-8 text-center text-stone-400 text-sm">
+            找不到符合條件的器材
+          </div>`;
+        return;
+      }
+
+      listEl.innerHTML = filtered.map((item) => {
+        const isBorrowed = item.status === "BORROWED";
+        const isAvailable = item.status === "AVAILABLE";
+        const borrowerLine = isBorrowed
+          ? `<div class="mt-2 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200/80 text-amber-900 text-xs flex flex-wrap items-center justify-between gap-2">
+               <span>👤 借閱人：<strong>${escapeHtml([item.current_unit, item.current_borrower].filter(Boolean).join(" ") || "未記錄")}</strong></span>
+               <span class="text-amber-700/80">${escapeHtml(item.last_updated || "")}</span>
+             </div>`
+          : "";
+
+        const quickAction = isAvailable
+          ? `<button type="button" onclick="quickPickItem('${escapeAttr(item.item_id)}', 'BORROW')" class="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold border border-amber-200 transition">＋ 借閱</button>`
+          : (isBorrowed
+              ? `<button type="button" onclick="quickPickItem('${escapeAttr(item.item_id)}', 'RETURN')" class="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold border border-emerald-200 transition">📥 歸還</button>`
+              : "");
+
+        return `
+          <div class="bg-white rounded-2xl border border-stone-200/90 shadow-sm p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0 space-y-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="font-bold text-stone-800 text-base">${escapeHtml(item.item_name)}</span>
+                  ${renderStatusBadge(item.status)}
+                </div>
+                <p class="text-xs text-stone-500">
+                  <span class="font-mono font-semibold text-stone-700">${escapeHtml(item.item_id)}</span>
+                  ・${escapeHtml(item.category || "未分類")}
+                  ・📍 ${escapeHtml(item.location || "未設定位置")}
+                </p>
+              </div>
+              <div class="shrink-0">${quickAction}</div>
+            </div>
+            ${borrowerLine}
+          </div>`;
+      }).join("");
+    }
+
+    function quickPickItem(itemId, targetMode) {
+      const upperId = String(itemId).toUpperCase();
+      switchTab(targetMode);
+      if (!cartItemIds.includes(upperId)) {
+        cartItemIds.push(upperId);
+      }
+      renderCart();
+      showToast(`已將 ${upperId} 加入${targetMode === "BORROW" ? "借閱" : "歸還"}清單`, "success");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    // =========================================================================
+    // UI 輔助工具
+    // =========================================================================
+    function renderStatusBadge(status) {
+      if (status === "AVAILABLE") {
+        return `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">在館可借</span>`;
+      }
+      if (status === "BORROWED") {
+        return `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800">借出中</span>`;
+      }
+      return `<span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-stone-200 text-stone-700">維修中</span>`;
+    }
+
+    function setLoading(show, text) {
+      const overlay = document.getElementById("loadingOverlay");
+      if (text) document.getElementById("loadingText").textContent = text;
+      overlay.classList.toggle("hidden", !show);
+    }
+
+    function showToast(message, type = "info") {
+      const container = document.getElementById("toastContainer");
+      const palette = {
+        success: "bg-emerald-700 text-white border-emerald-800",
+        error: "bg-red-600 text-white border-red-700",
+        warning: "bg-amber-600 text-white border-amber-700",
+        info: "bg-stone-800 text-white border-stone-900"
+      };
+      const icons = { success: "✅", error: "❌", warning: "⚠️", info: "ℹ️" };
+
+      const toast = document.createElement("div");
+      toast.className = `toast-enter pointer-events-auto px-4 py-3 rounded-2xl shadow-lg border text-sm font-semibold flex items-center gap-2.5 ${palette[type] || palette.info}`;
+      toast.innerHTML = `<span class="shrink-0">${icons[type] || "ℹ️"}</span><span class="leading-snug">${escapeHtml(message)}</span>`;
+      container.appendChild(toast);
+
+      setTimeout(() => {
+        toast.style.transition = "opacity 0.25s ease";
+        toast.style.opacity = "0";
+        setTimeout(() => toast.remove(), 260);
+      }, 3400);
+    }
+
+    function formatLocalNow() {
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function escapeHtml(str) {
+      return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function escapeAttr(str) {
+      return String(str || "").replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    }
+  </script>
+</body>
+</html>
