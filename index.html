@@ -137,6 +137,17 @@
           <span>已自動載入您的常用資料（送出借閱後將自動更新記憶）</span>
         </div>
 
+        <!-- 從預建名單快速帶入 -->
+        <div id="userRosterWrapper" class="hidden">
+          <label for="userRosterSelect" class="block text-xs font-semibold text-stone-600 mb-1">
+            ⚡ 從預建名單快速帶入（自動關聯逾期提醒信箱）
+          </label>
+          <select id="userRosterSelect" onchange="handleRosterSelect()" class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 bg-amber-50/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm font-medium text-stone-800">
+            <option value="">-- 選擇名單人員快速帶入（或下方自行填寫）--</option>
+          </select>
+          <p id="rosterEmailStatus" class="hidden mt-1.5 text-xs font-medium"></p>
+        </div>
+
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label for="inputUnit" class="block text-sm font-semibold text-stone-700 mb-1">
@@ -292,6 +303,7 @@
     let currentTab = "BORROW"; // "BORROW" | "OVERVIEW"
     let equipmentList = [];
     let equipmentMap = {};
+    let usersList = [];
     let cartItemIds = [];
     let overviewFilter = "ALL";
 
@@ -402,8 +414,71 @@
       document.getElementById("inputName").value = "";
       document.getElementById("inputContact").value = "";
       document.getElementById("prefillBadge").classList.add("hidden");
+      const rosterSelect = document.getElementById("userRosterSelect");
+      if (rosterSelect) rosterSelect.value = "";
+      document.getElementById("rosterEmailStatus").classList.add("hidden");
       showToast("已清除借閱人記憶，請輸入新借閱人資料", "info");
       document.getElementById("inputUnit").focus();
+    }
+
+    function populateUserRoster() {
+      const wrapper = document.getElementById("userRosterWrapper");
+      const select = document.getElementById("userRosterSelect");
+      if (!usersList || usersList.length === 0) {
+        wrapper.classList.add("hidden");
+        return;
+      }
+      wrapper.classList.remove("hidden");
+      select.innerHTML = `<option value="">-- 選擇名單人員快速帶入（或下方自行填寫）--</option>` +
+        usersList.map((u, idx) => {
+          const label = [u.unit, u.name].filter(Boolean).join("｜") + (u.role ? ` (${u.role})` : "");
+          return `<option value="${idx}">${escapeHtml(label)}</option>`;
+        }).join("");
+      syncRosterEmailStatus();
+    }
+
+    function handleRosterSelect() {
+      const idxStr = document.getElementById("userRosterSelect").value;
+      if (idxStr === "") {
+        document.getElementById("rosterEmailStatus").classList.add("hidden");
+        return;
+      }
+      const user = usersList[parseInt(idxStr, 10)];
+      if (!user) return;
+      document.getElementById("inputUnit").value = user.unit || "";
+      document.getElementById("inputName").value = user.name || "";
+      document.getElementById("inputContact").value = user.contact || "";
+      updateRosterEmailBadge(user);
+      showToast(`已帶入：${user.unit} ${user.name}`, "info");
+    }
+
+    function syncRosterEmailStatus() {
+      const unit = document.getElementById("inputUnit").value.trim().toLowerCase();
+      const name = document.getElementById("inputName").value.trim().toLowerCase();
+      if (!name || usersList.length === 0) {
+        document.getElementById("rosterEmailStatus").classList.add("hidden");
+        return;
+      }
+      const matched = usersList.find((u) =>
+        u.name.trim().toLowerCase() === name && (!unit || u.unit.trim().toLowerCase() === unit)
+      );
+      if (matched) {
+        updateRosterEmailBadge(matched);
+      } else {
+        document.getElementById("rosterEmailStatus").classList.add("hidden");
+      }
+    }
+
+    function updateRosterEmailBadge(user) {
+      const statusEl = document.getElementById("rosterEmailStatus");
+      statusEl.classList.remove("hidden");
+      if (user.has_email) {
+        statusEl.className = "mt-1.5 text-xs font-medium text-emerald-700";
+        statusEl.textContent = "📧 此使用者已建置 Email，逾期未歸還時系統將自動寄信提醒";
+      } else {
+        statusEl.className = "mt-1.5 text-xs font-medium text-amber-700";
+        statusEl.textContent = "⚠️ 此使用者尚未建置 Email，逾期時僅通知管理員";
+      }
     }
 
     // =========================================================================
@@ -423,11 +498,13 @@
         if (!json.success) throw new Error(json.message || "取得器材清單失敗");
 
         equipmentList = Array.isArray(json.data) ? json.data : [];
+        usersList = Array.isArray(json.users) ? json.users : [];
         if (json.settings && json.settings.system_title) {
           document.getElementById("systemTitle").textContent = json.settings.system_title;
           document.title = json.settings.system_title + " - 借用端";
         }
         rebuildEquipmentMap();
+        populateUserRoster();
         renderCart();
         renderOverview();
 

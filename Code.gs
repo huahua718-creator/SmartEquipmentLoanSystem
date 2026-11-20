@@ -1,20 +1,18 @@
 /**
  * 智慧型器材借閱管理系統 (Smart Equipment Loan System) - Google Apps Script 後端
  *
- * 部署方式：
- * 1. 於 Google Sheets 中點擊「擴充功能」>「Apps Script」
- * 2. 將本檔案內容貼上並儲存
- * 3. 初次使用請於編輯器上方選擇並執行 `setupSheets` 函式（會自動建立工作表與範例資料）
- * 4. 點擊「部署」>「新增部署」> 類型選擇「網頁應用程式」
- *    - 執行身分：我 (Me)
- *    - 誰可以存取：所有人 (Anyone)
- * 5. 複製產生的網頁應用程式 URL，貼入前端 index.html 的 `GAS_API_URL` 常數中
+ * 工作表結構：
+ * - Equipment：器材主檔
+ * - Logs：借還歷史流水帳
+ * - Settings：系統參數（system_title, admin_pin, admin_email, overdue_hours, notify_borrower_on_overdue）
+ * - Users：使用者名單與逾期通知 Email
  */
 
 const SHEET_NAMES = {
   EQUIPMENT: 'Equipment',
   LOGS: 'Logs',
-  SETTINGS: 'Settings'
+  SETTINGS: 'Settings',
+  USERS: 'Users'
 };
 
 const STATUS_ENUM = {
@@ -30,16 +28,10 @@ const ACTION_ENUM = {
 
 const TIMEZONE = 'Asia/Taipei';
 
-/**
- * 取得目前綁定的試算表物件
- */
 function getSpreadsheet_() {
   return SpreadsheetApp.getActiveSpreadsheet();
 }
 
-/**
- * 格式化日期時間為 YYYY-MM-DD HH:mm:ss
- */
 function formatDateTime_(value) {
   if (!value) return '';
   if (value instanceof Date) {
@@ -54,18 +46,12 @@ function formatDateTime_(value) {
   return str;
 }
 
-/**
- * 建立標準 JSON 回應
- */
 function jsonResponse_(payload) {
   return ContentService
     .createTextOutput(JSON.stringify(payload))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/**
- * 讀取 Settings 工作表為鍵值物件
- */
 function getSettingsMap_(ss) {
   const sheet = ss.getSheetByName(SHEET_NAMES.SETTINGS);
   const map = {};
@@ -81,9 +67,6 @@ function getSettingsMap_(ss) {
   return map;
 }
 
-/**
- * 讀取所有器材清單
- */
 function getAllEquipment_(ss) {
   const sheet = ss.getSheetByName(SHEET_NAMES.EQUIPMENT);
   if (!sheet) {
@@ -115,7 +98,44 @@ function getAllEquipment_(ss) {
 }
 
 /**
- * 一鍵初始化三個工作表與範例測試資料（可重複執行，不會覆蓋既有資料）
+ * 讀取 Users 工作表中已啟用的使用者名單
+ */
+function getAllUsers_(ss, includeEmail) {
+  const sheet = ss.getSheetByName(SHEET_NAMES.USERS);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+
+  const lastRow = sheet.getLastRow();
+  const values = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  const users = [];
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const name = String(row[2] || '').trim();
+    const unit = String(row[1] || '').trim();
+    const activeRaw = row[6];
+    const isActive = activeRaw === '' || activeRaw === true || String(activeRaw).trim().toUpperCase() === 'TRUE';
+
+    if (!name || !isActive) continue;
+
+    const email = String(row[3] || '').trim();
+    const item = {
+      user_id: String(row[0] || '').trim(),
+      unit: unit,
+      name: name,
+      contact: String(row[4] || '').trim(),
+      role: String(row[5] || '').trim(),
+      has_email: email.indexOf('@') !== -1
+    };
+    if (includeEmail) {
+      item.email = email;
+    }
+    users.push(item);
+  }
+  return users;
+}
+
+/**
+ * 一鍵初始化所有工作表與範例測試資料（可重複執行，不會覆蓋既有資料）
  */
 function setupSheets() {
   const ss = getSpreadsheet_();
@@ -141,7 +161,6 @@ function setupSheets() {
   }
   styleHeaderRow_(eqSheet, eqHeaders.length, '#D97706');
 
-  // 加入狀態下拉驗證
   const statusRule = SpreadsheetApp.newDataValidation()
     .requireValueInList([STATUS_ENUM.AVAILABLE, STATUS_ENUM.BORROWED, STATUS_ENUM.MAINTENANCE], true)
     .setAllowInvalid(false)
@@ -218,19 +237,52 @@ function setupSheets() {
       ['system_title', '智慧型器材借閱管理系統'],
       ['admin_pin', '1234'],
       ['admin_email', 'ada@clsh.ntpc.edu.tw'],
-      ['overdue_hours', '24']
+      ['overdue_hours', '24'],
+      ['notify_borrower_on_overdue', 'TRUE']
     ];
     settingsSheet.getRange(2, 1, defaultSettings.length, 2).setValues(defaultSettings);
   }
   settingsSheet.autoResizeColumns(1, settingsHeaders.length);
 
+  // 4. Users（借閱人名單與逾期通知 Email）
+  let usersSheet = ss.getSheetByName(SHEET_NAMES.USERS);
+  if (!usersSheet) {
+    usersSheet = ss.insertSheet(SHEET_NAMES.USERS);
+  }
+  const userHeaders = [
+    'user_id',
+    'unit',
+    'name',
+    'email',
+    'contact',
+    'role',
+    'active'
+  ];
+  if (usersSheet.getLastRow() === 0) {
+    usersSheet.getRange(1, 1, 1, userHeaders.length).setValues([userHeaders]);
+  }
+  styleHeaderRow_(usersSheet, userHeaders.length, '#0F766E');
+
+  const activeRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['TRUE', 'FALSE'], true)
+    .setAllowInvalid(false)
+    .build();
+  usersSheet.getRange('G2:G500').setDataValidation(activeRule);
+
+  if (usersSheet.getLastRow() < 2) {
+    const sampleUsers = [
+      ['U-001', '自然科', '陳大華', 'teacher1@example.edu.tw', '分機 201', '教師', 'TRUE'],
+      ['U-002', '資訊組', '林小美', 'teacher2@example.edu.tw', '分機 305', '教師', 'TRUE'],
+      ['U-003', '801班', '王小明', 'student801@example.edu.tw', '分機 123', '學生', 'TRUE']
+    ];
+    usersSheet.getRange(2, 1, sampleUsers.length, userHeaders.length).setValues(sampleUsers);
+  }
+  usersSheet.autoResizeColumns(1, userHeaders.length);
+
   SpreadsheetApp.flush();
-  Logger.log('工作表初始化完成：Equipment, Logs, Settings');
+  Logger.log('工作表初始化完成：Equipment, Logs, Settings, Users');
 }
 
-/**
- * 美化表頭列
- */
 function styleHeaderRow_(sheet, colCount, bgColor) {
   const headerRange = sheet.getRange(1, 1, 1, colCount);
   headerRange
@@ -252,12 +304,15 @@ function doGet(e) {
 
     if (action === 'getEquipment') {
       const data = getAllEquipment_(ss);
+      const users = getAllUsers_(ss, false);
       const settingsMap = getSettingsMap_(ss);
       return jsonResponse_({
         success: true,
         data: data,
+        users: users,
         settings: {
-          system_title: settingsMap.system_title || '智慧型器材借閱管理系統'
+          system_title: settingsMap.system_title || '智慧型器材借閱管理系統',
+          pin_required: String(settingsMap.admin_pin || '1234').trim() !== ''
         }
       });
     }
@@ -281,9 +336,6 @@ function doGet(e) {
 function doPost(e) {
   const lock = LockService.getScriptLock();
   try {
-    // 最多等待 10 秒取得鎖定，防止多人同時借還寫入衝突
-    lock.waitLock(10000);
-
     if (!e || !e.postData || !e.postData.contents) {
       return jsonResponse_({
         success: false,
@@ -305,6 +357,11 @@ function doPost(e) {
       });
     }
 
+    // 驗證管理員 PIN 碼（無需鎖定試算表）
+    if (payload.action === 'verifyAdminPin') {
+      return handleVerifyAdminPin_(payload);
+    }
+
     if (payload.action !== 'submitTransaction') {
       return jsonResponse_({
         success: false,
@@ -314,6 +371,8 @@ function doPost(e) {
       });
     }
 
+    // 寫入交易前取得 LockService 鎖定（最多等待 10 秒）
+    lock.waitLock(10000);
     return handleSubmitTransaction_(payload);
   } catch (err) {
     return jsonResponse_({
@@ -332,6 +391,24 @@ function doPost(e) {
 }
 
 /**
+ * 驗證管理員 PIN 碼（比對 Settings 工作表中的 admin_pin）
+ */
+function handleVerifyAdminPin_(payload) {
+  const ss = getSpreadsheet_();
+  const settingsMap = getSettingsMap_(ss);
+  const expectedPin = String(settingsMap.admin_pin !== undefined ? settingsMap.admin_pin : '1234').trim();
+  const inputPin = String(payload.pin || '').trim();
+
+  if (expectedPin === '') {
+    return jsonResponse_({ success: true, message: '未設定管理員 PIN 碼，直接進入' });
+  }
+  if (inputPin && inputPin === expectedPin) {
+    return jsonResponse_({ success: true, message: '管理員身分驗證成功' });
+  }
+  return jsonResponse_({ success: false, message: '管理員 PIN 碼錯誤，請重新確認' });
+}
+
+/**
  * 處理批次借閱與歸還交易
  */
 function handleSubmitTransaction_(payload) {
@@ -343,6 +420,23 @@ function handleSubmitTransaction_(payload) {
       failed: [],
       message: '無效的交易類型，僅支援 BORROW 或 RETURN'
     });
+  }
+
+  const ss = getSpreadsheet_();
+  const settingsMap = getSettingsMap_(ss);
+
+  // 歸還作業強制驗證管理員 PIN 碼
+  if (type === ACTION_ENUM.RETURN) {
+    const expectedPin = String(settingsMap.admin_pin !== undefined ? settingsMap.admin_pin : '1234').trim();
+    const inputPin = String(payload.admin_pin || '').trim();
+    if (expectedPin !== '' && inputPin !== expectedPin) {
+      return jsonResponse_({
+        success: false,
+        processed: [],
+        failed: [],
+        message: '管理員 PIN 碼驗證失敗，無權辦理歸還作業'
+      });
+    }
   }
 
   const rawItems = Array.isArray(payload.items) ? payload.items : [];
@@ -380,7 +474,6 @@ function handleSubmitTransaction_(payload) {
     });
   }
 
-  const ss = getSpreadsheet_();
   const eqSheet = ss.getSheetByName(SHEET_NAMES.EQUIPMENT);
   const logsSheet = ss.getSheetByName(SHEET_NAMES.LOGS);
 
@@ -391,7 +484,6 @@ function handleSubmitTransaction_(payload) {
   const eqLastRow = eqSheet.getLastRow();
   const eqValues = eqLastRow >= 2 ? eqSheet.getRange(2, 1, eqLastRow - 1, 8).getValues() : [];
 
-  // 建立 item_id -> 資料列索引（從 2 開始）對照表
   const eqIndexMap = {};
   for (let i = 0; i < eqValues.length; i++) {
     const id = String(eqValues[i][0] || '').trim().toUpperCase();
@@ -427,7 +519,6 @@ function handleSubmitTransaction_(payload) {
 
     if (type === ACTION_ENUM.BORROW) {
       if (eq.status === STATUS_ENUM.AVAILABLE) {
-        // 更新 Equipment 為借出中
         eqSheet.getRange(eq.rowNumber, 5, 1, 4).setValues([[
           STATUS_ENUM.BORROWED,
           borrowerName,
@@ -456,7 +547,6 @@ function handleSubmitTransaction_(payload) {
         failed.push({ item_id: eq.itemId, reason: '器材目前為維修中或不可借閱狀態' });
       }
     } else {
-      // RETURN 歸還邏輯
       if (eq.status === STATUS_ENUM.MAINTENANCE) {
         failed.push({ item_id: eq.itemId, reason: '器材標記為維修中，請由管理員於試算表調整狀態' });
         continue;
@@ -465,7 +555,6 @@ function handleSubmitTransaction_(payload) {
       const prevUnit = eq.currentUnit;
       const prevBorrower = eq.currentBorrower;
 
-      // 重設 Equipment 為在館 AVAILABLE，清空借閱人與單位
       eqSheet.getRange(eq.rowNumber, 5, 1, 4).setValues([[
         STATUS_ENUM.AVAILABLE,
         '',
@@ -518,9 +607,6 @@ function handleSubmitTransaction_(payload) {
   });
 }
 
-/**
- * 計算當日下一個流水號序號 (LOG-YYYYMMDD-001)
- */
 function getNextLogSeqForDate_(logsSheet, dateObj) {
   const prefix = 'LOG-' + Utilities.formatDate(dateObj, TIMEZONE, 'yyyyMMdd') + '-';
   const lastRow = logsSheet.getLastRow();
@@ -541,8 +627,40 @@ function getNextLogSeqForDate_(logsSheet, dateObj) {
 }
 
 /**
- * 每日排程：檢查逾期未歸還器材並寄送通知信給管理員
- * （延續自原 NFC 系統功能，可在 Apps Script 觸發條件設定每天早上 8:00 執行）
+ * 依單位＋姓名（或僅姓名）查詢 Users 名單中的 Email
+ */
+function buildUserEmailLookup_(users) {
+  const byUnitName = {};
+  const byName = {};
+  for (let i = 0; i < users.length; i++) {
+    const u = users[i];
+    if (!u.email || u.email.indexOf('@') === -1) continue;
+    const nameKey = u.name.trim().toLowerCase();
+    const unitKey = u.unit.trim().toLowerCase();
+    if (unitKey && nameKey) {
+      byUnitName[unitKey + '|' + nameKey] = u.email;
+    }
+    if (nameKey && !byName[nameKey]) {
+      byName[nameKey] = u.email;
+    }
+  }
+  return { byUnitName: byUnitName, byName: byName };
+}
+
+function findUserEmail_(lookup, unit, name) {
+  const u = String(unit || '').trim().toLowerCase();
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return '';
+  if (u && lookup.byUnitName[u + '|' + n]) {
+    return lookup.byUnitName[u + '|' + n];
+  }
+  return lookup.byName[n] || '';
+}
+
+/**
+ * 每日排程：檢查逾期未歸還器材
+ * 1. 若借閱人在 Users 名單中有設定 Email，直接寄發個別逾期提醒信給借閱人
+ * 2. 同時彙整總表（含個別寄信狀態）寄給管理員 (admin_email)
  */
 function sendOverdueEmailNotification() {
   const ss = getSpreadsheet_();
@@ -550,8 +668,12 @@ function sendOverdueEmailNotification() {
   const adminEmail = settings.admin_email || 'ada@clsh.ntpc.edu.tw';
   const overdueHours = parseFloat(settings.overdue_hours || '24') || 24;
   const systemTitle = settings.system_title || '智慧型器材借閱管理系統';
+  const notifyBorrower = String(settings.notify_borrower_on_overdue || 'TRUE').trim().toUpperCase() !== 'FALSE';
 
   const eqList = getAllEquipment_(ss);
+  const users = getAllUsers_(ss, true);
+  const emailLookup = buildUserEmailLookup_(users);
+
   const now = new Date();
   const thresholdMs = overdueHours * 60 * 60 * 1000;
   const overdueItems = [];
@@ -562,14 +684,17 @@ function sendOverdueEmailNotification() {
       const updatedDate = new Date(eq.last_updated.replace(/-/g, '/'));
       if (!isNaN(updatedDate.getTime()) && (now.getTime() - updatedDate.getTime()) > thresholdMs) {
         const hoursElapsed = Math.floor((now.getTime() - updatedDate.getTime()) / (60 * 60 * 1000));
+        const borrowerEmail = findUserEmail_(emailLookup, eq.current_unit, eq.current_borrower);
         overdueItems.push({
           item_id: eq.item_id,
           item_name: eq.item_name,
           location: eq.location,
           borrower: eq.current_borrower,
           unit: eq.current_unit,
+          email: borrowerEmail,
           last_updated: eq.last_updated,
-          hoursElapsed: hoursElapsed
+          hoursElapsed: hoursElapsed,
+          notifyStatus: ''
         });
       }
     }
@@ -580,33 +705,115 @@ function sendOverdueEmailNotification() {
     return;
   }
 
+  // 依借閱人 Email 分組並寄發個人提醒信
   const todayStr = Utilities.formatDate(now, TIMEZONE, 'yyyy/MM/dd');
-  const subject = '🚨 【' + systemTitle + '】每日逾期未歸還提醒 (' + todayStr + ')';
+  if (notifyBorrower) {
+    const groupedByEmail = {};
+    for (let i = 0; i < overdueItems.length; i++) {
+      const item = overdueItems[i];
+      if (!item.email) {
+        item.notifyStatus = '未建置信箱（需管理員手動催還）';
+        continue;
+      }
+      if (!groupedByEmail[item.email]) {
+        groupedByEmail[item.email] = {
+          borrowerName: item.borrower,
+          unit: item.unit,
+          items: []
+        };
+      }
+      groupedByEmail[item.email].items.push(item);
+    }
 
-  let htmlBody = '<h3>您好，以下器材借出已超過 ' + overdueHours + ' 小時尚未歸還：</h3>';
-  htmlBody += '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; text-align: left;">';
-  htmlBody += '<tr style="background-color: #FEF3C7;"><th>器材編號</th><th>器材名稱</th><th>借閱單位</th><th>借閱人</th><th>借出時間</th><th>已借出時數</th></tr>';
+    const emails = Object.keys(groupedByEmail);
+    for (let k = 0; k < emails.length; k++) {
+      const targetEmail = emails[k];
+      const group = groupedByEmail[targetEmail];
+      const userSubject = '⏰ 【' + systemTitle + '】器材逾期歸還提醒 (' + todayStr + ')';
+
+      let userBody = '<p><strong>' + (group.unit ? group.unit + ' ' : '') + group.borrowerName + '</strong> 您好：</p>';
+      userBody += '<p>系統檢查到您有以下 <strong>' + group.items.length + ' 項</strong>器材借出已超過 <strong>' + overdueHours + ' 小時</strong>尚未歸還，請於方便時將器材交還給管理人員辦理歸還點收：</p>';
+      userBody += '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; text-align: left;">';
+      userBody += '<tr style="background-color: #FEF3C7;"><th>器材編號</th><th>器材名稱</th><th>存放位置</th><th>借出時間</th><th>已借出時數</th></tr>';
+      for (let m = 0; m < group.items.length; m++) {
+        const it = group.items[m];
+        userBody += '<tr>';
+        userBody += '<td><b>' + it.item_id + '</b></td>';
+        userBody += '<td>' + it.item_name + '</td>';
+        userBody += '<td>' + it.location + '</td>';
+        userBody += '<td>' + it.last_updated + '</td>';
+        userBody += '<td style="color: #DC2626; font-weight: bold;">' + it.hoursElapsed + ' 小時</td>';
+        userBody += '</tr>';
+      }
+      userBody += '</table>';
+      userBody += '<p style="color:#6B7280;font-size:12px;">※ 若您已歸還器材但狀態尚未更新，請聯繫器材室管理人員協助點收。<br>此信件由 ' + systemTitle + ' 自動發送。</p>';
+
+      try {
+        MailApp.sendEmail({
+          to: targetEmail,
+          subject: userSubject,
+          htmlBody: userBody
+        });
+        for (let m = 0; m < group.items.length; m++) {
+          group.items[m].notifyStatus = '已自動寄信通知 (' + targetEmail + ')';
+        }
+      } catch (mailErr) {
+        for (let m = 0; m < group.items.length; m++) {
+          group.items[m].notifyStatus = '寄信失敗：' + mailErr.message;
+        }
+      }
+    }
+  } else {
+    for (let i = 0; i < overdueItems.length; i++) {
+      overdueItems[i].notifyStatus = '已關閉借閱人自動通知';
+    }
+  }
+
+  // 彙整寄給管理員
+  const adminSubject = '🚨 【' + systemTitle + '】每日逾期未歸還彙整報告 (' + todayStr + ')';
+  let adminBody = '<h3>管理員 您好，今日共有 ' + overdueItems.length + ' 筆借用超過 ' + overdueHours + ' 小時尚未歸還：</h3>';
+  adminBody += '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; text-align: left;">';
+  adminBody += '<tr style="background-color: #FEF3C7;"><th>器材編號</th><th>器材名稱</th><th>借閱單位</th><th>借閱人</th><th>借出時間</th><th>已借出時數</th><th>個人通知狀態</th></tr>';
 
   for (let j = 0; j < overdueItems.length; j++) {
     const item = overdueItems[j];
-    htmlBody += '<tr>';
-    htmlBody += '<td><b>' + item.item_id + '</b></td>';
-    htmlBody += '<td>' + item.item_name + '</td>';
-    htmlBody += '<td>' + item.unit + '</td>';
-    htmlBody += '<td><b>' + item.borrower + '</b></td>';
-    htmlBody += '<td>' + item.last_updated + '</td>';
-    htmlBody += '<td style="color: #DC2626; font-weight: bold;">' + item.hoursElapsed + ' 小時</td>';
-    htmlBody += '</tr>';
+    adminBody += '<tr>';
+    adminBody += '<td><b>' + item.item_id + '</b></td>';
+    adminBody += '<td>' + item.item_name + '</td>';
+    adminBody += '<td>' + item.unit + '</td>';
+    adminBody += '<td><b>' + item.borrower + '</b></td>';
+    adminBody += '<td>' + item.last_updated + '</td>';
+    adminBody += '<td style="color: #DC2626; font-weight: bold;">' + item.hoursElapsed + ' 小時</td>';
+    adminBody += '<td>' + item.notifyStatus + '</td>';
+    adminBody += '</tr>';
   }
 
-  htmlBody += '</table>';
-  htmlBody += '<p style="color:#6B7280;font-size:12px;">此信件由 ' + systemTitle + ' 自動發送，請勿直接回覆。</p>';
+  adminBody += '</table>';
+  adminBody += '<p style="color:#6B7280;font-size:12px;">可於試算表「Users」工作表維護教師／使用者 Email 名單。此信件由 ' + systemTitle + ' 自動發送。</p>';
 
   MailApp.sendEmail({
     to: adminEmail,
-    subject: subject,
-    htmlBody: htmlBody
+    subject: adminSubject,
+    htmlBody: adminBody
   });
 
-  Logger.log('已成功發送逾期提醒信件給 ' + adminEmail + '，共 ' + overdueItems.length + ' 筆。');
+  Logger.log('已成功完成逾期檢查並通知管理員 ' + adminEmail + '，共 ' + overdueItems.length + ' 筆。');
+}
+
+/**
+ * 一鍵建立每日早上 8:00 自動執行逾期通知的排程觸發條件（請於編輯器手動執行一次即可）
+ */
+function setupOverdueTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'sendOverdueEmailNotification') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('sendOverdueEmailNotification')
+    .timeBased()
+    .everyDays(1)
+    .atHour(8)
+    .create();
+  Logger.log('已建立每日早上 8:00～9:00 自動執行 sendOverdueEmailNotification 的觸發條件。');
 }

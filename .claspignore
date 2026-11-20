@@ -1,0 +1,9 @@
+**/*
+!Code.gs
+!appsscript.json
+.git/**
+*.html
+*.md
+.gitignore
+.clasp.json
+.claspignore

@@ -74,6 +74,39 @@
 </head>
 <body class="min-h-screen pb-28 antialiased">
 
+  <!-- 管理員 PIN 碼身分驗證遮罩 -->
+  <div id="pinGateOverlay" class="no-print fixed inset-0 z-40 bg-warmbg/95 backdrop-blur-md flex flex-col items-center justify-center p-5">
+    <div class="max-w-sm w-full bg-white rounded-3xl shadow-xl border border-emerald-200 p-6 sm:p-7 space-y-5">
+      <div class="text-center space-y-2">
+        <div class="mx-auto w-16 h-16 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl">
+          🛡️
+        </div>
+        <h2 class="text-xl font-bold text-stone-800">管理人員身分驗證</h2>
+        <p class="text-xs sm:text-sm text-stone-500 leading-relaxed">
+          為確保器材確實經點收歸還，請輸入管理員 PIN 碼後進入「辦理歸還」與「條碼印製」作業區。
+        </p>
+      </div>
+
+      <div class="space-y-3">
+        <div>
+          <label for="inputAdminPin" class="block text-sm font-semibold text-stone-700 mb-1">管理員 PIN 碼</label>
+          <input id="inputAdminPin" type="password" inputmode="numeric" autocomplete="off" placeholder="請輸入 PIN 碼（預設 1234）" class="w-full px-4 py-3.5 rounded-2xl border border-stone-300 bg-stone-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 text-center text-lg tracking-widest font-bold" />
+        </div>
+        <p id="pinErrorText" class="hidden text-xs font-bold text-red-600 text-center"></p>
+        <button type="button" id="btnVerifyPin" onclick="verifyAdminPin()" class="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold text-base shadow-md transition">
+          🔓 驗證並進入管理系統
+        </button>
+      </div>
+
+      <div class="pt-2 border-t border-stone-100 text-center space-y-2">
+        <p class="text-[11px] text-stone-400">PIN 碼可於試算表「Settings」工作表中的 <code>admin_pin</code> 隨時修改</p>
+        <a href="./index.html" class="inline-block text-xs font-semibold text-amber-700 hover:underline">
+          ← 返回老師借閱端網頁
+        </a>
+      </div>
+    </div>
+  </div>
+
   <!-- LINE 內建瀏覽器全螢幕防呆遮罩 -->
   <div id="lineGuardOverlay" class="no-print fixed inset-0 z-50 hidden bg-warmbg/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
     <div class="max-w-sm w-full bg-white rounded-3xl shadow-xl border border-emerald-200 p-7 space-y-5">
@@ -129,6 +162,10 @@
           <button type="button" onclick="fetchEquipmentList(true)" title="重新同步器材狀態" class="px-3 py-2 rounded-xl bg-stone-100 hover:bg-stone-200 active:scale-95 text-stone-700 text-sm font-medium transition flex items-center gap-1">
             <span>🔄</span>
             <span>同步</span>
+          </button>
+          <button type="button" onclick="lockAdminSession()" title="鎖定管理畫面" class="px-2.5 py-2 rounded-xl bg-stone-800 hover:bg-stone-900 active:scale-95 text-white text-xs font-bold transition flex items-center gap-1">
+            <span>🔒</span>
+            <span class="hidden sm:inline">鎖定</span>
           </button>
         </div>
       </div>
@@ -439,8 +476,10 @@
     // =========================================================================
     const GAS_API_URL = "https://script.google.com/macros/s/AKfycbzNSPUOhz_Aq771uuXHncjfMISLxBy4JMMMmpW5YEfl2gQhGv4DJQii8eVRrWiLXKJx/exec";
     const DEBOUNCE_MS = 2500;
+    const ADMIN_PIN_STORAGE_KEY = "eq_admin_verified_pin";
 
     // 應用程式狀態
+    let verifiedAdminPin = "";
     let currentTab = "RETURN"; // "RETURN" | "OVERVIEW" | "QRCODE"
     let equipmentList = [];
     let equipmentMap = {};
@@ -467,8 +506,8 @@
       checkLineBrowser();
       initDefaultPortalUrl();
       bindEvents();
-      fetchEquipmentList(false);
       updateModeUI();
+      restoreOrPromptAdminPin();
     });
 
     function initDefaultPortalUrl() {
@@ -489,6 +528,81 @@
           handleManualAdd();
         }
       });
+      const pinInput = document.getElementById("inputAdminPin");
+      pinInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          verifyAdminPin();
+        }
+      });
+    }
+
+    function restoreOrPromptAdminPin() {
+      const savedPin = sessionStorage.getItem(ADMIN_PIN_STORAGE_KEY);
+      if (savedPin) {
+        verifiedAdminPin = savedPin;
+        document.getElementById("pinGateOverlay").classList.add("hidden");
+        fetchEquipmentList(false);
+      } else {
+        document.getElementById("pinGateOverlay").classList.remove("hidden");
+        setTimeout(() => document.getElementById("inputAdminPin").focus(), 100);
+      }
+    }
+
+    async function verifyAdminPin() {
+      const pinInput = document.getElementById("inputAdminPin");
+      const errEl = document.getElementById("pinErrorText");
+      const pin = pinInput.value.trim();
+      errEl.classList.add("hidden");
+
+      if (!pin) {
+        errEl.textContent = "請輸入管理員 PIN 碼";
+        errEl.classList.remove("hidden");
+        pinInput.focus();
+        return;
+      }
+
+      setLoading(true, "正在驗證管理員 PIN 碼...");
+      try {
+        const res = await fetch(GAS_API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ action: "verifyAdminPin", pin: pin })
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const json = await res.json();
+
+        if (json.success) {
+          verifiedAdminPin = pin;
+          sessionStorage.setItem(ADMIN_PIN_STORAGE_KEY, pin);
+          pinInput.value = "";
+          document.getElementById("pinGateOverlay").classList.add("hidden");
+          showToast(json.message || "管理員驗證成功", "success");
+          await fetchEquipmentList(false);
+        } else {
+          errEl.textContent = json.message || "PIN 碼錯誤";
+          errEl.classList.remove("hidden");
+          pinInput.select();
+        }
+      } catch (err) {
+        errEl.textContent = "驗證失敗，請確認網路連線：" + err.message;
+        errEl.classList.remove("hidden");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function lockAdminSession() {
+      if (isScanning) {
+        stopScanner();
+      }
+      verifiedAdminPin = "";
+      sessionStorage.removeItem(ADMIN_PIN_STORAGE_KEY);
+      document.getElementById("pinErrorText").classList.add("hidden");
+      document.getElementById("inputAdminPin").value = "";
+      document.getElementById("pinGateOverlay").classList.remove("hidden");
+      showToast("已鎖定管理員畫面", "info");
+      setTimeout(() => document.getElementById("inputAdminPin").focus(), 100);
     }
 
     function checkLineBrowser() {
@@ -961,6 +1075,7 @@
       const payload = {
         action: "submitTransaction",
         type: "RETURN",
+        admin_pin: verifiedAdminPin,
         borrower: {
           unit: "",
           name: returnerName,
@@ -997,7 +1112,11 @@
           await fetchEquipmentList(false);
         } else {
           showToast(json.message || "歸還失敗，請稍後再試", "error");
-          await fetchEquipmentList(false);
+          if (json.message && json.message.includes("PIN")) {
+            lockAdminSession();
+          } else {
+            await fetchEquipmentList(false);
+          }
         }
       } catch (err) {
         console.error(err);
